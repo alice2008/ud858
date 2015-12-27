@@ -16,6 +16,7 @@ import httplib
 import endpoints
 from protorpc import messages
 from google.appengine.ext import ndb
+from google.appengine.ext.ndb import msgprop
 
 class ConflictException(endpoints.ServiceException):
     """ConflictException -- exception mapped to HTTP 409 response"""
@@ -27,6 +28,7 @@ class Profile(ndb.Model):
     mainEmail = ndb.StringProperty()
     teeShirtSize = ndb.StringProperty(default='NOT_SPECIFIED')
     conferenceKeysToAttend = ndb.StringProperty(repeated=True)
+    sessionsWishList = ndb.StringProperty(repeated=True)
 
 class ProfileMiniForm(messages.Message):
     """ProfileMiniForm -- update Profile form message"""
@@ -39,6 +41,7 @@ class ProfileForm(messages.Message):
     mainEmail = messages.StringField(2)
     teeShirtSize = messages.EnumField('TeeShirtSize', 3)
     conferenceKeysToAttend = messages.StringField(4, repeated=True)
+    sessionsWishList = messages.StringField(5, repeated=True)
 
 class BooleanMessage(messages.Message):
     """BooleanMessage-- outbound Boolean value message"""
@@ -104,3 +107,78 @@ class ConferenceQueryForms(messages.Message):
     """ConferenceQueryForms -- multiple ConferenceQueryForm inbound form message"""
     filters = messages.MessageField(ConferenceQueryForm, 1, repeated=True)
 
+class StringMessage(messages.Message):
+    """StringMessage-- outbound (single) string message"""
+    data = messages.StringField(1, required=True)
+
+class SessionTypes(messages.Enum):
+    NOT_SPECIFIED = 1
+    Workshop = 2
+    Lecture = 3
+    Keynote = 4
+    Discussion = 5
+
+class Session(ndb.Model):
+    """Session -- Session object"""
+    name            = ndb.StringProperty(required=True)
+    highlights      = ndb.StringProperty(repeated=True)
+    speakerName     = ndb.StringProperty()
+    speakerUserId   = ndb.StringProperty()
+    duration        = ndb.IntegerProperty() # in hours?
+    typeOfSession   = msgprop.EnumProperty(SessionTypes, indexed=True)
+    date            = ndb.DateProperty()
+    startTime       = ndb.TimeProperty()
+    confWebSafeKey  = ndb.StringProperty()
+    creatorUserId   = ndb.StringProperty()
+
+class SessionPostForm(messages.Message):
+    """Session post form """
+    name                    = messages.StringField(1)
+    highlights              = messages.StringField(2, repeated=True)
+    speakerName             = messages.StringField(3)
+    speakerUserId           = messages.StringField(4)
+    duration                = messages.IntegerField(5, variant=messages.Variant.INT32)
+    typeOfSession           = messages.EnumField('SessionTypes', 6)
+    date                    = messages.StringField(7)
+    startTime               = messages.StringField(8)
+
+class SessionForm(messages.Message):
+    """SessionForm -- Session outbound form message"""
+    name                    = messages.StringField(1)
+    highlights              = messages.StringField(2, repeated=True)
+    speakerName             = messages.StringField(3)
+    speakerUserId           = messages.StringField(4)
+    duration                = messages.IntegerField(5, variant=messages.Variant.INT32)
+    typeOfSession           = messages.EnumField('SessionTypes', 6)
+    date                    = messages.StringField(7)
+    startTime               = messages.StringField(8)
+    websafeKey              = messages.StringField(9)
+    conferenceDisplayName   = messages.StringField(10)
+    creatorUserId           = messages.StringField(11)
+    confWebSafeKey          = messages.StringField(12)
+
+class SessionForms(messages.Message):
+    """SessionForms - multiple sessions outbound message"""
+    items = messages.MessageField(SessionForm, 1, repeated=True)
+
+## query for session's startTime between startTime and endTime
+class SessionQueryByTypeByStartTimeForm(messages.Message):
+    """Session query form -- session query inbound form message"""
+    typeOfSessionDisallowed = messages.EnumField('SessionTypes', 1, repeated=True)
+    earliestStartTime = messages.StringField(2)
+    latestStartTime = messages.StringField(3)
+
+class FeatureSpeakerForm(messages.Message):
+    """Featured speaker form"""
+    speakerUserId = messages.StringField(1)
+    speakerName = messages.StringField(2)
+    sessionList = messages.StringField(3, repeated=True)
+
+class FeatureSpeakerForms(messages.Message):
+    """Featured speaker forms"""
+    speakers = messages.MessageField(FeatureSpeakerForm, 1, repeated=True)
+
+
+# class SessionTypeForm(messages.Message):
+#     """SessionTypeForm"""
+#     typeOfSession = messages.EnumField('SessionTypes', 1, required=True)
