@@ -602,7 +602,9 @@ class ConferenceApi(remote.Service):
         return sf
 
     def _createSpeaker(self, request):
-        """creat speaker profile if it does not exist"""
+        """creat speaker profile if it does not exist,
+        requst is SESS_POST_REQUEST type"""
+        # using Profile Kind to store speaker info
         email = getattr(request, 'speakerUserId')
         if hasattr(request, 'speakerName'):
             displayName = getattr(request, 'speakerName')
@@ -619,6 +621,7 @@ class ConferenceApi(remote.Service):
 
     # @ndb.transactional(xg=True)
     def _createSessionObject(self, request):
+        """create new session entity, requst is SESS_POST_REQUEST type"""
         # preload necessary data items
         user = endpoints.get_current_user()
         if not user:
@@ -642,7 +645,7 @@ class ConferenceApi(remote.Service):
             if data[df] in (None, []):
                 data[df] = SESSION_DEFAULTS[df]
 
-        print data
+        # print data
 
         # get parent conference
         conf = ndb.Key(urlsafe=request.websafeConferenceKey).get()
@@ -682,60 +685,45 @@ class ConferenceApi(remote.Service):
         data['confWebSafeKey'] = request.websafeConferenceKey
         data['creatorUserId'] = user_id
         s = Session(**data)
+        s.put()
 
-        # if s.speaker:
-        #     self._checkAndCacheSpeaker(s)
+        # check if feature speaker, add to taskqueue
         if s.speakerUserId:
             taskqueue.add(params={'websafeConferenceKey':data['confWebSafeKey'],
                 'speakerUserId':data['speakerUserId'], 'speakerName':data['speakerName'],
                 'sessionName':data['name']}, url='/tasks/cache_feature_speaker')
-        s.put()
-        # q = taskqueue.Queue('default')
-        # q.purge()
         return self._copySessionToForm(s, getattr(conf, 'name'))
 
 
     @staticmethod
-    def _copyFeatureSpeakerForm(data):
-        fsf = FeatureSpeakerForm()
-        setattr(fsf, 'speakerUserId', data['speakerUserId'])
-        setattr(fsf, 'speakerName', data['speakerName'])
-        setattr(fsf, 'sessionList', [data['sessionName']])
-        return fsf
-
-    @staticmethod
     def _cacheFeatureSpeaker(websafeConferenceKey, speakerUserId, speakerName, sessionName):
+        """static method to memcache the latest featured speaker for one conference"""
         data = {}
         data['websafeConferenceKey'] = websafeConferenceKey
         data['speakerUserId'] = speakerUserId
         data['speakerName'] = speakerName
         data['sessionName'] = sessionName
-        print '===data===', data
-        print type(data)
+        # print '===data===', data
+        # print type(data)
         websafeConferenceKey = data['websafeConferenceKey']
         speakerUserId = data['speakerUserId']
+        ## query if session with same speaker exist
         c_key = ndb.Key(urlsafe=websafeConferenceKey)
         q = Session.query(ancestor=c_key)
+        # sessions with same speaker
         sessions = q.filter(Session.speakerUserId == data['speakerUserId']).fetch()
-        if not sessions: # not feature speaker; do nothing
-            return
-        feature_speaker_list = memcache.get(websafeConferenceKey)
-        # no entry in the memcache
-        if not feature_speaker_list:
-            fsf = ConferenceApi._copyFeatureSpeakerForm(data)
-            feature_speaker_list = FeatureSpeakerForms(speakers=[fsf])
-        else:
-            notFound = True
-            for f in feature_speaker_list.speakers:
-                if f.speakerUserId == speakerUserId:
-                    f.sessionList.append(data['sessionName'])
-                    notFound = False
-                    break
-            if notFound:
-                fsf = ConferenceApi._copyFeatureSpeakerForm(data)
-                feature_speaker_list.speakers.append(fsf)
-        memcache.set(websafeConferenceKey, feature_speaker_list)
 
+        if len(sessions) <= 1: # not a feature speaker; do nothing
+            return
+
+        fsf = FeatureSpeakerForm()
+        setattr(fsf, 'speakerUserId', data['speakerUserId'])
+        setattr(fsf, 'speakerName', data['speakerName'])
+        setattr(fsf, 'sessionList', [])
+
+        for s in sessions:
+            fsf.sessionList.append(s.name)
+        memcache.set('FSP_' + websafeConferenceKey, fsf)
 
 
     @endpoints.method(SESS_POST_REQUEST, SessionForm,
@@ -803,6 +791,7 @@ class ConferenceApi(remote.Service):
 
     def _sessionAddOrDeleteToWishList(self, request, add=True):
         """add or delete one session from user's wishList"""
+        # return value; True means success; False means fail
         retval = None
         prof = self._getProfileFromUser() # get user profile. If not exist, create one
 
@@ -885,6 +874,7 @@ class ConferenceApi(remote.Service):
         return BooleanMessage(data=True)
 
     def _updateSession(self, request):
+        """update session. request is SESS_UPDATE_REQUEST type"""
         # preload necessary data items
         user = endpoints.get_current_user()
         if not user:
@@ -904,27 +894,25 @@ class ConferenceApi(remote.Service):
 
         if user_id != session.creatorUserId:
             raise endpoints.ForbiddenException(
-                "Only the onwer can update this session!")
-                # copy ConferenceForm/ProtoRPC Message into dict
+                "Only the owner can update this session!")
+
         # print request
+        for field in request.all_fields():
+            data = getattr(request, field.name)
+            if data:
+                if field.name == 'date':
+                    data = datetime.strptime(data[:10], "%Y-%m-%d").date()
+                elif field.name == 'startTime':
+                    data = datetime.strptime(data[:8], "%H:%M:%S").time()
+                setattr(session, field.name, data)
+
+        # check if request has speakerUserId, if speaker has not been created, create a new one.
         if hasattr(request, 'speakerUserId'):
             speaker = ndb.Key(Profile, request.speakerUserId).get()
             if not speaker:
                 speaker = self._createSpeaker(request)
-            print speaker
+            # set session speakerName with the one in database
             setattr(session, 'speakerName', speaker.displayName)
-            print session
-
-        for field in request.all_fields():
-            if field.name != 'speakerName':
-                data = getattr(request, field.name)
-                if data:
-                    if field.name == 'date':
-                        data = datetime.strptime(data[:10], "%Y-%m-%d").date()
-                    elif field.name == 'startTime':
-                        data = datetime.strptime(data[:8], "%H:%M:%S").time()
-                    setattr(session, field.name, data)
-        print session
 
         session.put()
         conf = ndb.Key(urlsafe=session.confWebSafeKey).get()
@@ -947,19 +935,26 @@ class ConferenceApi(remote.Service):
         return self._deleteSession(request)
 
     def _querySessionsByTypeByStartTime(self, request):
+        """Query session first by disallowed types and then by start and end time.
+        request is SessionQueryByTypeByStartTimeForm type"""
+        # request only has disallowed types. Session type is a Enum value.
+        # by excluding the disallowed types from list, get preferred session types.
         allowed_session_types = []
         for t in SessionTypes:
             if not t in request.typeOfSessionDisallowed:
                 allowed_session_types.append(t)
-        print t
+        # print t
         if request.earliestStartTime:
             earliestStartTime = datetime.strptime(request.earliestStartTime, "%H:%M:%S").time()
         if request.latestStartTime:
             latestStartTime = datetime.strptime(request.latestStartTime, "%H:%M:%S").time()
+
+        # first level of query to get all the sessions in allowed session types.
         q = Session.query(Session.typeOfSession.IN(allowed_session_types))
-        if earliestStartTime:
+        # second and third level of queries for startTime and endTime
+        if request.earliestStartTime:
             q = q.filter(Session.startTime >= earliestStartTime)
-        if latestStartTime:
+        if request.latestStartTime:
             q = q.filter(Session.startTime <= latestStartTime)
         conf_keys = [(ndb.Key(urlsafe=session.confWebSafeKey)) for session in q]
         confs = ndb.get_multi(conf_keys)
@@ -982,16 +977,17 @@ class ConferenceApi(remote.Service):
 
 # ------- Featured speaker --------------------------------------
 
-    @endpoints.method(SESS_GET_REQUEST, FeatureSpeakerForms,
+    @endpoints.method(SESS_GET_REQUEST, FeatureSpeakerForm,
         path='getFeaturedSpeaker/{websafeConferenceKey}', http_method='GET',
         name='getFeaturedSpeaker')
     def getFeaturedSpeaker(self, request):
-        """Get Featured Speakers' list from memcache in one conference"""
-        featured_speakers = memcache.get(request.websafeConferenceKey)
-        print "=== featured_speakers", featured_speakers
-        if not featured_speakers:
-            featured_speakers = FeatureSpeakerForms(speakers=[])
-        return featured_speakers
+        """Get latest featured Speakers' list from memcache a conference"""
+        #memache key is 'FSP_' + websafeConferenceKey
+        featured_speaker = memcache.get('FSP_' + request.websafeConferenceKey)
+        # print "=== featured_speakers", featured_speaker
+        if not featured_speaker:
+            featured_speaker = FeatureSpeakerForm()
+        return featured_speaker
 
 
 
